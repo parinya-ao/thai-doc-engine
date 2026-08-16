@@ -1,0 +1,6 @@
+[package]
+name = "thai-doc-engine"
+version = "1.0.0"
+entrypoint = "lib.typ"
+authors = ["Parinya Aobaun parinya.aobaun@outlook.com"]
+description = "Thai-English Knuth-Plass document engine with BudouX phrase-break WASM plugin, built for KU Computer Engineering final-project documents"

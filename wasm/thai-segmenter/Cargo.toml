@@ -1,0 +1,33 @@
+[package]
+name = "thai-segmenter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "BudouX phrase segmenter for Thai, compiled as a Typst WebAssembly plugin"
+publish = false
+
+# Typst loads plugins as 32-bit shared WebAssembly libraries -> cdylib.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-minimal-protocol = "0.2.0"
+
+# default-features = false drops phf's "std" feature; Map::get is core-only,
+# so this stays compatible with the size-optimized wasm32-unknown-unknown
+# release profile below.
+phf = { version = "0.14", default-features = false }
+
+# serde_json and phf_codegen never reach the wasm binary: build.rs bakes
+# models/th.json into perfect-hash tables, so the plugin ships no JSON parser
+# and no model loading.
+[build-dependencies]
+serde_json = "1"
+phf_codegen = "0.14"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

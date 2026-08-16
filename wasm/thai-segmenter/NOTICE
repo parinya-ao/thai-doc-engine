@@ -1,0 +1,22 @@
+models/th.json is the pretrained Thai phrase-segmentation model from BudouX.
+
+    Upstream:  https://github.com/google/budoux
+    Path:      budoux/models/th.json
+    Commit:    f43d94cc094e84d26bfeea902ac6adb64f5d7d35
+               ("Add Thai language support (#421)", 2023-12-20)
+    Licence:   Apache License 2.0 — full text in LICENSE.budoux
+    Copyright: Google LLC
+
+The file is vendored verbatim; build.rs only re-encodes it as sorted Rust
+tables. src/lib.rs is an independent transcription of BudouX's scoring rule
+(Parser.parse) and is licensed Apache-2.0 to match.
+
+To refresh the model:
+
+    curl -sSL https://raw.githubusercontent.com/google/budoux/main/budoux/models/th.json \
+      -o wasm/thai-segmenter/models/th.json
+    mise run build_wasm       # rebuilds docs/thai_segmenter.wasm
+
+`cargo test` asserts the model's weight total (4401); a refreshed model will
+fail that assertion until the expected total is updated, which is deliberate —
+the number is the fingerprint of the shipped weights.
