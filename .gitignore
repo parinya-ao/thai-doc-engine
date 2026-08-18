@@ -1,6 +1,12 @@
 # Created by https://www.toptal.com/developers/gitignore/api/rust,latex,c,c++
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust,latex,c,c++
 
+# Training corpora fetched by `mise run download_train_dataset`. LST20's licence
+# forbids redistribution, and the rest is hundreds of megabytes of derived text.
+wasm/thai-segmenter/training/data/
+# prepare.py imports label.py for the corpus conventions they share.
+wasm/thai-segmenter/training/__pycache__/
+
 ### C ###
 # Prerequisites
 *.d

@@ -2,6 +2,9 @@
 rust = "latest"
 typst = "latest"
 typstyle = "latest"
+# uv runs the training scripts; their dependencies are declared inline (PEP 723)
+# so nothing is installed into a shared environment.
+uv = "latest"
 
 [tasks.install]
 description = "Symlink thai-doc-engine into Typst's local package dir"
@@ -82,3 +85,26 @@ print(f"{len(runs)} runs, {sum(map(len, runs))} chars -> {out}")
 PY
 '''
 
+
+# ===== training data =====
+# Fetching and labelling corpora, not training. The training run itself stays
+# manual -- see wasm/thai-segmenter/training/README.md.
+
+[tasks.download_train_dataset]
+description = "Fetch LST20 + VISTEC + Thai Wikipedia into wasm/thai-segmenter/training/data/raw"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MISE_PROJECT_ROOT"
+uv run wasm/thai-segmenter/training/download.py "$@"
+'''
+
+[tasks.prepare_train_dataset]
+description = "Label the fetched corpora into BudouX U+2581 training files"
+depends = ["download_train_dataset"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MISE_PROJECT_ROOT"
+uv run wasm/thai-segmenter/training/prepare.py "$@"
+'''

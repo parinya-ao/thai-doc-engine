@@ -1,0 +1,10 @@
+# 1. รัน Encode ข้อมูล
+python scripts/encode_data.py ../wasm/thai-segmenter/training/data/prepared/all.train.txt -o encoded.txt
+
+# 2. เทรนโมเดล AdaBoost
+python scripts/train.py encoded.txt -o weights.txt
+
+# 3. รวมไฟล์เป็น th.json
+python scripts/build_model.py weights.txt -o th.json
+
+train model adaboot step 2 นาน กินแรมด้วย
