@@ -2,7 +2,7 @@
   "_": "ข้อมูลคำของ template.typ — แก้ไฟล์นี้ ไม่ต้องแก้ engine. ทับได้ด้วย typography: (dict|path) หรือ --input typography=/docs/xxx.json",
   "phrase-method": "box",
   "phrase-min-run": 8,
-  "phrase-min-chunk": 4,
+  "phrase-min-chunk": 3,
   "unit-classifiers": [
     "บอร์ด",
     "ตัว",

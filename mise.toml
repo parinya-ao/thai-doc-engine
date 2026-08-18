@@ -26,3 +26,59 @@ echo "Installed @local/thai-doc-engine:1.0.0 -> $DEST/1.0.0"
 description = "Format all Typst files under docs/ in place"
 run = "typstyle -i docs"
 
+# ===== wasm/thai-segmenter =====
+# The plugin binary is committed so that compiling a Typst document never needs
+# Rust. These tasks are for changing the plugin, not for using it.
+
+[tasks.build_wasm]
+description = "Build the BudouX plugin and install it into the Typst package"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MISE_PROJECT_ROOT"
+rustup target add wasm32-unknown-unknown
+cargo build --release --manifest-path wasm/thai-segmenter/Cargo.toml \
+  --target wasm32-unknown-unknown
+cp wasm/thai-segmenter/target/wasm32-unknown-unknown/release/thai_segmenter.wasm \
+  package/thai-doc-engine/1.0.0/thai_segmenter.wasm
+ls -l package/thai-doc-engine/1.0.0/thai_segmenter.wasm
+'''
+
+[tasks.test_wasm]
+description = "Test, lint and format-check the BudouX plugin on the host target"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MISE_PROJECT_ROOT"
+cargo test --release --manifest-path wasm/thai-segmenter/Cargo.toml --features cli
+cargo clippy --manifest-path wasm/thai-segmenter/Cargo.toml --features cli --all-targets -- -D warnings
+'''
+
+# `eval` doubles as the benchmark: `mise run eval bench corpus.txt 3`.
+# Modes are dump | score | stats | bench -- see wasm/thai-segmenter/src/bin/eval.rs.
+[tasks.eval]
+description = "Run the segmenter evaluation harness (dump|score|stats|bench)"
+run = "cargo run --release --quiet --features cli --manifest-path wasm/thai-segmenter/Cargo.toml --bin eval --"
+
+[tasks.corpus]
+description = "Extract the Thai runs this repo's documents feed the plugin, for eval/bench"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MISE_PROJECT_ROOT"
+python3 - "$@" <<'PY'
+import glob, re, sys
+out = sys.argv[1] if len(sys.argv) > 1 else "wasm/thai-segmenter/training/corpus.txt"
+# The same pattern engine.typ's show rule matches, so the corpus is exactly the
+# input the plugin sees in production.
+runs, seen = [], set()
+for path in sorted(glob.glob("tests/**/*.typ", recursive=True)) + sorted(glob.glob("example/*.typ")):
+    for run in re.findall(r"[฀-๿]{8,}", open(path, encoding="utf8").read()):
+        if run not in seen:
+            seen.add(run)
+            runs.append(run)
+open(out, "w", encoding="utf8").write("\n".join(runs) + "\n")
+print(f"{len(runs)} runs, {sum(map(len, runs))} chars -> {out}")
+PY
+'''
+

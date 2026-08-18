@@ -47,7 +47,7 @@
     th-config.at("phrase-min-run", default: 8)
   } else { phrase-min-run }
   let phrase-min-chunk = if phrase-min-chunk == auto {
-    th-config.at("phrase-min-chunk", default: 4)
+    th-config.at("phrase-min-chunk", default: 3)
   } else { phrase-min-chunk }
   let phrase-keep = if phrase-keep == auto {
     th-config.at("keep-phrases", default: ())
