@@ -35,6 +35,7 @@ use `find tests -name '*.typ'` instead)
 | `09-links` | link style | `no-use`: default blue link. `use`: black + underlined. |
 | `10-header-footer-topic` | page furniture | `no-use`: bare pages. `use`: header rule + text, footer rule + page numbers, centered title block. |
 | `12-stress-long` | worst-case density | `no-use`: dense out-of-dictionary compound Thai (technical + celebrity/place-name jargon, no real word spaces) breaks unpredictably. `use`: BudouX still finds sane phrase boundaries. |
+| `13-cover` | `cover()` page | `no-use`: the title splits mid-word (ดำเนิน/งาน, อย่าง/ยั่งยืน) and the cover carries header/footer/page numbers. `use`: phrase-safe breaks, five zones on the ninths grid, no page furniture, body restarts at page 1. |
 
 ## Notes
 
@@ -48,8 +49,29 @@ use `find tests -name '*.typ'` instead)
 - `use.typ` files import `@local/thai-doc-engine:1.0.0` — requires the
   package to be installed under the Typst local package cache (already
   present on this machine at
-  `~/.local/share/typst/packages/local/thai-doc-engine/1.0.0`). Note this
-  differs from `example.typ` at the repo root, which imports plain
-  `"thai-doc-engine:1.0.0"` — that import currently fails to compile
-  (`typst compile` errors with "file not found"); it should likely also
-  be `@local/thai-doc-engine:1.0.0`.
+  `~/.local/share/typst/packages/local/thai-doc-engine/1.0.0`, and created
+  by `mise run install`). `example.typ` at the repo root used to import
+  plain `"thai-doc-engine:1.0.0"`, which failed to compile; it now uses the
+  same `@local/` form.
+
+## `13-cover` extras
+
+Beyond the `no-use`/`use` pair, this dir has three files that are not
+comparisons:
+
+- `assert.typ` — the only file in the repo that fails *loudly*. It checks
+  the cover's numeric helpers (`contrast-ratio` against the 21:1 and 1:1
+  reference points, `cover-margins` against the ninths ratios, the 8mm A4
+  column, `thai-leading` round-tripping through `k`, `thai-numerals`). A
+  broken invariant aborts compilation with a message instead of quietly
+  producing a wrong-looking PDF.
+- `grid.typ` — `grid-debug: true` overlay, one page per margin canon plus a
+  golden-ratio (0.382H) anchor. Magenta is the ninths text block, the 12
+  columns, the page diagonals and the optical-centre rule; cyan is the
+  measured title stack, whose centre must sit on the magenta rule. The
+  footer line reports the canon, scale factor, fit factor, column/gutter
+  widths and the resulting hero band height.
+- `papers.typ` — the same cover on a4/a5/a3/us-letter and a landscape a4.
+  a5 and a3 must be the identical design at 0.707x and 1.414x; landscape
+  must still fit all five zones (it is the case that catches using
+  `page.width`/`page.height`, which ignore `flipped`).

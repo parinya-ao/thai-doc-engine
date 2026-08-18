@@ -169,10 +169,12 @@
       widow: 300%, // Prevents the last line of a paragraph from being pushed to a new page
       orphan: 300%, // Prevents the first line of a paragraph from remaining at the bottom of a page
     ),
-    // Measured from TH Sarabun New.ttf (upem 1000): sCapHeight = 0.340em, but level 4 tone marks
-    // (Mai Tho/Karan) reach 0.844em. Setting top-edge: "cap-height" allows tone marks to overflow
-    // the line box by 0.504em. With original leading at 0.45em, tone marks collide with the above
-    // line's descender zone. "ascender" (0.844em) is the font's declared value.
+    // See `sarabun-metrics` below for the measured numbers. Short version: cap-height is only
+    // 0.476em, while a level-4 tone mark stacked on a level-3 vowel (bold "ปั๊ม") reaches
+    // 0.836em. top-edge: "cap-height" would let tone marks overflow the line box by 0.36em and
+    // collide with the line above. "ascender"/"descender" resolve to the OS/2 *typo* metrics
+    // (+0.85em / -0.25em), which fit the Thai ink envelope almost exactly — 0.014em of headroom
+    // above the tone marks, 0.003em below the sara-uu. Line box is therefore 1.10em.
     top-edge: "ascender",
     bottom-edge: "descender",
     fill: black,
@@ -250,9 +252,12 @@
     // relying on default glue behavior.
     justification-limits: (tracking: (min: -0.015em, max: 0.015em)),
     first-line-indent: (amount: 1.5em, all: true),
-    // Line box ascender..descender = 1.301em; leading 0.2em -> baseline-to-baseline 1.501em =
-    // 24.01pt at 16pt target (23.2-24.0pt per official correspondence standards, 1.5x).
-    // Documents hitting page limits should pass leading: 0.05em (21.6pt) from the caller side.
+    // Line box ascender..descender = 1.10em (OS/2 typo metrics, see sarabun-metrics), so
+    // baseline-to-baseline = 1.10em + leading. At the 0.2em default that is 1.30em = 20.8pt on
+    // 16pt text. NOTE: the 1.5x / 23.2-24.0pt figure used by Thai official correspondence
+    // standards needs leading: 0.4em, i.e. `thai-leading(1.5)`. The 0.2em default is kept for
+    // backwards compatibility -- changing it reflows every existing document.
+    // Documents hitting page limits can pass a smaller leading from the caller side.
     leading: leading,
     spacing: 0.75em,
   )
@@ -299,7 +304,7 @@
 
   // ===== 7. Links & Abstract Block =====
   show link: set text(fill: black)
-  show link: underline
+  show link: it => underline(it, stroke: black)
 
   if topic != none {
     align(center)[
@@ -316,6 +321,504 @@
 
   // ===== Main Content Injection =====
   body
+}
+
+// ===== Cover page =====
+//
+// Implements the "Corporate Clean" annual-report cover system described in docs/cover.md:
+// five functional zones, Van de Graaf ninths page geometry, a 12-column Swiss grid, optical-
+// centre placement, 60-30-10 colour with WCAG-checkable contrast, and phrase-safe Thai
+// display typesetting.
+//
+// Two things the spec assumes are not true here, so the numbers below are re-derived:
+//
+//   1. It is written for neo-grotesque Latin display faces (Inter/Helvetica metrics) and
+//      recommends *loopless* Thai (Sukhumvit Set, Prompt). This package targets TH Sarabun
+//      New, which is looped, ships only Regular/Bold, and draws much smaller on the em.
+//   2. Its Thai leading band (k in [1.50, 1.80]) is a blanket safety margin, not a measurement
+//      of this font.
+//
+// Everything in `sarabun-metrics` was measured directly -- the glyf/OS-2 tables of
+// "TH Sarabun New.ttf", cross-checked against what Typst actually lays out via measure().
+
+#let sarabun-metrics = (
+  upem: 1000,
+  // Typst's top-edge/bottom-edge: "ascender"/"descender" resolve to the OS/2 *typo* metrics,
+  // NOT hhea (which is +0.844 / -0.457 in this font). This is the pair that matters.
+  ascender: 0.85,
+  descender: -0.25,
+  line-box: 1.10, // ascender - descender
+  cap-height: 0.476,
+  x-height: 0.340,
+  // Worst-case *shaped* ink, from measure(top-edge: "bounds"). The extremes are a level-4
+  // tone mark stacked over a level-3 vowel (bold "ปั๊ม") and a below-base vowel (bold "ญู").
+  ink-top: 0.836,
+  ink-bottom: -0.247,
+  // Latin cap 0.476 vs a neo-grotesque's ~0.727, x-height 0.340 vs ~0.52: both ratios land on
+  // 1.53. Multiply the Latin-calibrated sizes in docs/cover.md by this to match optical size.
+  optical-scale: 1.53,
+)
+
+// Baseline-to-baseline = line-box + leading, so a target factor k needs this leading.
+// Collision check: clearance between line n's lowest ink and line n+1's highest ink is
+// (k - 1.083)em, so k = 1.083 is where Thai tone marks actually touch below-base vowels --
+// far tighter than the k >= 1.50 docs/cover.md assumes. Display type can safely go to ~1.30.
+#let thai-leading(k) = (k - sarabun-metrics.line-box) * 1em
+
+#let _thai-digits = (
+  "0": "๐",
+  "1": "๑",
+  "2": "๒",
+  "3": "๓",
+  "4": "๔",
+  "5": "๕",
+  "6": "๖",
+  "7": "๗",
+  "8": "๘",
+  "9": "๙",
+)
+
+// thai-numerals: 2568 -> ๒๕๖๘. Non-digits pass through unchanged.
+#let thai-numerals(value) = (
+  str(value).clusters().map(c => _thai-digits.at(c, default: c)).join()
+)
+
+// WCAG 2.1 relative luminance, L = 0.2126R + 0.7152G + 0.0722B over sRGB-linearised channels.
+#let relative-luminance(c) = {
+  let (r, g, b, ..) = rgb(c).components()
+  let lin(x) = {
+    let v = x / 100%
+    if v <= 0.04045 { v / 12.92 } else { calc.pow((v + 0.055) / 1.055, 2.4) }
+  }
+  0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+// contrast-ratio: (L1 + 0.05) / (L2 + 0.05), lighter over darker. >= 4.5 is WCAG AA for body
+// text, >= 7 is AAA. Large display type (>= 24pt bold / 30pt regular) needs only 3 / 4.5.
+#let contrast-ratio(fg, bg) = {
+  let (a, b) = (relative-luminance(fg), relative-luminance(bg))
+  let (hi, lo) = if a > b { (a, b) } else { (b, a) }
+  (hi + 0.05) / (lo + 0.05)
+}
+
+// cover-margins: page geometry canons from docs/cover.md. All three are expressed as
+// proportions of the page, never as fixed millimetres, which is what makes the cover render
+// correctly on every paper size without a per-paper table.
+//
+// "van-de-graaf" projects the classical ninths construction: inner W/9, top H/9, outer 2W/9,
+// bottom 2H/9. On A4 that is 23.33 / 33.0 / 46.67 / 66.0 mm, text block 140 x 198 mm.
+#let cover-margins(w, h, canon) = {
+  let (u, v) = (w / 9, h / 9)
+  if canon == "van-de-graaf" {
+    (left: u, top: v, right: 2 * u, bottom: 2 * v)
+  } else if canon == "iso" {
+    // docs/cover.md, ISO 216 row: inner : top : outer : bottom = 1 : 1.2 : 1.5 : 2.
+    (left: u, top: 1.2 * v, right: 1.5 * u, bottom: 2 * v)
+  } else if canon == "symmetric" {
+    (left: u, top: v, right: u, bottom: v)
+  } else {
+    panic(
+      "canon must be \"van-de-graaf\", \"iso\", or \"symmetric\" — got " + repr(canon),
+    )
+  }
+}
+
+// thai-merge-keeps: drop any phrase boundary that falls strictly inside a curated whole word.
+//
+// BudouX's Thai model segments at morpheme level, so at the default min-chunk it cuts
+// "ยั่งยืน" into ยั่ง|ยืน and "ดำเนินงาน" into ดำเนิน|งาน. In running text those boundaries
+// rarely land on a line end; in a two-line display title they very often do.
+//
+// thai-document-engine corrects this with a second `show regex` rule declared after the BudouX
+// one. That cannot work here: by the time the second rule runs, the first has already replaced
+// the text with a sequence of separate boxes, so the curated word is no longer a contiguous
+// text run for the regex to match. Rewriting the boundary list *before* anything is boxed is
+// the reliable fix, and it is what the cover uses.
+//
+// Offsets are UTF-8 byte indices throughout — str.len(), str.matches() and str.slice() all
+// agree on that unit, so multi-byte Thai clusters stay intact.
+#let thai-merge-keeps(phrases, keeps) = {
+  if keeps.len() == 0 or phrases.len() <= 1 { return phrases }
+  let full = phrases.join()
+  let cuts = ()
+  let acc = 0
+  for p in phrases.slice(0, -1) {
+    acc += p.len()
+    cuts.push(acc)
+  }
+  let protected = full.matches(regex(thai-alternation(keeps)))
+  let kept = cuts.filter(c => not protected.any(m => c > m.start and c < m.end))
+  let out = ()
+  let prev = 0
+  for c in kept {
+    out.push(full.slice(prev, c))
+    prev = c
+  }
+  out.push(full.slice(prev))
+  out
+}
+
+// Default bar heights for the generated hero. A fixed sequence rather than a PRNG: Typst has
+// no RNG, and a deterministic field keeps the cover byte-identical across recompiles.
+#let cover-hero-heights = (0.22, 0.55, 0.38, 0.81, 0.64, 1.0, 0.47, 0.72, 0.31, 0.58, 0.44, 0.19)
+
+#let cover(
+  brand: none, // Zone 1 — brand lockup, sits on the top margin
+  title: none, // Zone 2 — document classification title (Thai)
+  title-en: none, // Zone 2 — Latin counterpart
+  subtitle: none, // Zone 2 — supporting line
+  period: none, // Zone 3 — fiscal year / planning horizon
+  meta: (), // Zone 5 — array of regulatory metadata items
+  hero: auto, // Zone 4 — auto = generated geometry, none = empty, or any content
+  palette: (:), // (base:, brand:, signal:) — 60 / 30 / 10
+  sizes: (:), // pt overrides, pre-scaling
+  canon: "van-de-graaf",
+  optical: 0.45, // title centre as a fraction of page height (0.382 = golden alternative)
+  columns: 12,
+  gutter: auto, // auto -> 4mm scaled; 12 cols at 4mm gives exactly 8mm columns on A4
+  font: "TH Sarabun New",
+  numerals: "arabic", // "arabic" | "thai"
+  k-display: 1.35, // leading factor for the display title
+  k-body: 1.55, // leading factor for everything else
+  tracking: -0.01em,
+  fit: true, // shrink the display type until the title stack fits its budget
+  min-hero: auto, // floor on the hero band before the title is allowed to shrink into it
+  grid-debug: false,
+  counter-reset: true,
+  phrase-break: true,
+  phrase-min-run: auto, // auto -> typography.json
+  phrase-min-chunk: auto, // auto -> typography.json
+  phrase-keep: auto, // auto -> typography.json keep-phrases
+  typography: none, // dict or path, as per thai-document-engine
+  orphan-guard: true,
+) = {
+  // Same data-driven config the engine uses. The keep-phrase layer matters more here than in
+  // body text: BudouX's Thai model segments at morpheme level, so at the default min-chunk it
+  // cuts "ยั่งยืน" into ยั่ง|ยืน and "ดำเนินงาน" into ดำเนิน|งาน. In a paragraph those rarely land
+  // on a line end; in a two-line display title they very often do.
+  let th-config = load-typography(typography)
+  let phrase-min-run = if phrase-min-run == auto {
+    th-config.at("phrase-min-run", default: 8)
+  } else { phrase-min-run }
+  let phrase-min-chunk = if phrase-min-chunk == auto {
+    th-config.at("phrase-min-chunk", default: 4)
+  } else { phrase-min-chunk }
+  let phrase-keep = if phrase-keep == auto {
+    th-config.at("keep-phrases", default: ())
+  } else { phrase-keep }
+
+  let pal = (
+    // Defaults clear WCAG AAA on the base: brand 16.88:1, signal 9.45:1.
+    base: rgb("#FFFFFF"),
+    brand: rgb("#0F1D33"),
+    signal: rgb("#8C1220"),
+  ) + palette
+
+  // Latin-calibrated sizes from docs/cover.md multiplied through optical-scale and rounded:
+  // display 36-54pt -> 55-83pt, subtitle 16-24pt -> 24-37pt, metadata 9-11pt -> 14-17pt.
+  let sz = (
+    brand: 15pt,
+    title: 64pt,
+    title-en: 26pt,
+    subtitle: 24pt,
+    period: 64pt,
+    meta: 14pt,
+  ) + sizes
+
+  assert(
+    numerals in ("arabic", "thai"),
+    message: "numerals must be \"arabic\" or \"thai\" — got " + repr(numerals),
+  )
+
+  // margin: 0pt makes place() coordinates absolute page coordinates; header/footer/numbering
+  // are cleared so a cover placed inside thai-document-engine does not inherit page furniture.
+  // `paper` is deliberately NOT set — the one-off page inherits it from the enclosing
+  // `set page`, which is what lets the same call render on a4, a5, a3 or us-letter.
+  page(
+    margin: 0pt,
+    header: none,
+    footer: none,
+    numbering: none,
+    fill: pal.base,
+    {
+      // These MUST be issued before the `context` below, not inside it. A context expression
+      // resolves styles at its own position, so set rules written after it opens are invisible
+      // to the measure() calls within — which silently mis-measures the title stack (wrong
+      // font, and top-edge defaulting to "cap-height" instead of "ascender") and drops the
+      // period zone on top of the last title line.
+      set text(
+        font: font,
+        lang: "th",
+        region: "th",
+        fill: pal.brand,
+        // The measured ink fit — see sarabun-metrics.
+        top-edge: "ascender",
+        bottom-edge: "descender",
+      )
+      // Thai display type is never justified (docs/cover.md, Multi-Line Step 3): with no
+      // native word spaces, stretching a line opens ragged gaps between phrases instead.
+      set par(justify: false, leading: thai-leading(k-body))
+
+      // layout(), not page.width/page.height: on a `flipped` page those two still report the
+      // unflipped 210x297, so a landscape cover would be laid out to portrait dimensions and
+      // run off the sheet. With margin: 0pt the layout container is exactly the page box.
+      layout(size => {
+        let (w, h) = (size.width, size.height)
+        // Scale against A4 on whichever axis binds first. For the A series this is exact either
+        // way (aspect is preserved: A5 -> 0.707, A3 -> 1.414), and it is the only form that
+        // survives a non-ISO aspect ratio. Width alone would set landscape A4 at 1.414x on a
+        // 210mm-tall page; the geometric mean is no better there, because flipping a sheet
+        // leaves its area — and therefore sqrt(area) — completely unchanged. Taking the minimum
+        // costs about 4% on us-letter (0.939 vs 0.983) and cannot overflow on any paper.
+        let s = calc.min(w / 210mm, h / 297mm)
+        let m = cover-margins(w, h, canon)
+        let text-w = w - m.left - m.right
+        let g = if gutter == auto { 4mm * s } else { gutter }
+        let col-w = (text-w - (columns - 1) * g) / columns
+        let min-hero = if min-hero == auto { 22mm * s } else { min-hero }
+
+        // Phrase-safe Thai breaking, reusing the BudouX plugin wrappers above. This is
+        // docs/cover.md's four-step multi-line recipe: thai-chunks() is the morphological
+        // parse (Step 1), box() per phrase is the break-control marker (Step 2, and the
+        // equivalent of word-break: keep-all in Step 3), and merging the final two phrases is
+        // the orphan guard.
+        let phrased(body) = {
+          show regex(if phrase-break {
+            "\\p{sc=Thai}{" + str(phrase-min-run) + ",}"
+          } else { thai-never }): it => {
+            let phrases = thai-merge-keeps(
+              thai-chunks(it.text, phrase-min-chunk),
+              phrase-keep,
+            )
+            if phrases.len() <= 1 {
+              it
+            } else if orphan-guard and phrases.len() >= 3 {
+              let head = phrases.slice(0, -2).map(box)
+              (head + (box(phrases.at(-2) + phrases.at(-1)),)).join()
+            } else {
+              phrases.map(box).join()
+            }
+          }
+          body
+        }
+
+        let line-at(y, stroke-w, colour) = place(
+          top + left,
+          dx: m.left,
+          dy: y,
+          line(length: text-w, stroke: stroke-w + colour),
+        )
+
+        // Vertical rhythm between zones, scaled with the paper.
+        let gap = 5mm * s
+
+        // --- Zone 1: brand lockup --------------------------------------------------------
+        let brand-block = if brand == none { none } else {
+          block(width: text-w, {
+            set text(size: sz.brand * s, weight: "bold", tracking: 0.1em)
+            phrased(brand)
+          })
+        }
+        let brand-h = if brand-block == none { 0pt } else {
+          measure(block(width: text-w, brand-block)).height
+        }
+
+        // --- Zone 5: regulatory metadata, sitting on the bottom margin line --------------
+        let meta-block = if meta.len() == 0 { none } else {
+          block(width: text-w, {
+            set text(size: sz.meta * s, fill: pal.brand.lighten(20%))
+            grid(
+              columns: (1fr,) * meta.len(),
+              column-gutter: g,
+              align: left,
+              ..meta.map(item => phrased(item)),
+            )
+          })
+        }
+        let meta-h = if meta-block == none { 0pt } else {
+          measure(block(width: text-w, meta-block)).height
+        }
+        let meta-y = h - m.bottom - meta-h
+
+        // --- Zone 3: temporal periodisation ---------------------------------------------
+        // Thai digits draw ~5% shorter than Latin ones in this font (๒๕๖๘ tops out at 0.460em
+        // vs 0.484em for 2568), so they get a small compensating bump.
+        let period-block = if period == none { none } else {
+          let body = if numerals == "thai" and type(period) in (int, str) {
+            thai-numerals(period)
+          } else { period }
+          block(width: text-w, {
+            set text(
+              size: sz.period * s * (if numerals == "thai" { 1.06 } else { 1.0 }),
+              weight: "bold",
+              fill: pal.signal,
+              tracking: tracking,
+            )
+            body
+          })
+        }
+        let period-h = if period-block == none { 0pt } else {
+          measure(block(width: text-w, period-block)).height
+        }
+
+        // --- Zone 2: classification title, optically centred ------------------------------
+        // Built at a shrink factor so the display size can be fitted to the space actually
+        // available. All three lines shrink together, preserving the size hierarchy.
+        let make-title(f) = {
+          if title != none {
+            block(width: text-w, {
+              set par(leading: thai-leading(k-display))
+              set text(size: sz.title * s * f, weight: "bold", tracking: tracking)
+              phrased(title)
+            })
+          }
+          if title-en != none {
+            block(width: text-w, above: 0.55em, {
+              set text(size: sz.title-en * s * f, lang: "en", tracking: 0em)
+              title-en
+            })
+          }
+          if subtitle != none {
+            block(width: text-w, above: 0.9em, {
+              set text(size: sz.subtitle * s * f, fill: pal.brand.lighten(25%))
+              phrased(subtitle)
+            })
+          }
+        }
+
+        // The title is centred on the optical anchor, so it grows symmetrically about it and
+        // eats twice the distance to whichever neighbour it reaches first: the brand lockup
+        // above, or the period + hero + metadata below. A long Thai title at the default 64pt
+        // runs to three or four lines and would otherwise crush the hero band out of existence.
+        // calc.max keeps the budget positive on very short or landscape pages, where the zones
+        // below the anchor can already consume everything. A non-positive budget would otherwise
+        // skip the fit loop entirely and let the title overrun the page — the opposite of what
+        // a cramped page needs.
+        let title-budget = calc.max(
+          2
+            * calc.min(
+              // 3.5 gaps, not 2: the band below the title loses one gap before the period,
+              // one after it, and the 1.5 that hero-bottom holds back off the metadata rule.
+              // Counting only the first two silently ate into min-hero.
+              meta-y - optical * h - period-h - 3.5 * gap - min-hero,
+              optical * h - m.top - brand-h - gap,
+            ),
+          12mm * s,
+        )
+        let fit-factor = 1.0
+        let title-stack = make-title(fit-factor)
+        let title-h = measure(block(width: text-w, title-stack)).height
+        if fit {
+          // Step down until it fits. Bounded: 0.04 per step from 1.0 to the 0.45 floor.
+          while title-h > title-budget and fit-factor > 0.45 {
+            fit-factor = fit-factor - 0.04
+            title-stack = make-title(fit-factor)
+            title-h = measure(block(width: text-w, title-stack)).height
+          }
+        }
+        let title-y = optical * h - title-h / 2
+        let period-y = title-y + title-h + gap
+
+        if brand-block != none {
+          place(top + left, dx: m.left, dy: m.top, brand-block)
+        }
+
+        place(top + left, dx: m.left, dy: title-y, block(width: text-w, title-stack))
+        if period-block != none {
+          place(top + left, dx: m.left, dy: period-y, block(width: text-w, period-block))
+        }
+
+        // --- Zone 4: hero abstraction ----------------------------------------------------
+        let hero-top = period-y + period-h + gap
+        let hero-bottom = meta-y - 1.5 * gap
+        let hero-h = hero-bottom - hero-top
+        if hero != none and hero-h > 0.5 * min-hero {
+          place(top + left, dx: m.left, dy: hero-top, block(width: text-w, height: hero-h, {
+            if hero == auto {
+              // The Van de Graaf construction lines that generated the page, drawn as
+              // near-invisible hairlines, plus a column-aligned bar field reading as a data
+              // abstraction. Both land on the same 12-column module as the type above.
+              let faint = pal.brand.transparentize(90%)
+              place(top + left, line(
+                start: (0pt, 0pt),
+                end: (text-w, hero-h),
+                stroke: 0.3pt + faint,
+              ))
+              place(top + left, line(
+                start: (text-w, 0pt),
+                end: (0pt, hero-h),
+                stroke: 0.3pt + faint,
+              ))
+              place(top + left, line(
+                start: (0pt, 0pt),
+                end: (text-w / 2, hero-h),
+                stroke: 0.3pt + faint,
+              ))
+              place(top + left, line(
+                start: (text-w, 0pt),
+                end: (text-w / 2, hero-h),
+                stroke: 0.3pt + faint,
+              ))
+              for i in range(columns) {
+                let bar-h = cover-hero-heights.at(calc.rem(i, cover-hero-heights.len())) * hero-h
+                let fill-colour = if calc.rem(i, 6) == 5 {
+                  pal.signal
+                } else {
+                  pal.brand.transparentize(45% + calc.rem(i * 13, 40) * 1%)
+                }
+                place(
+                  top + left,
+                  dx: i * (col-w + g),
+                  dy: hero-h - bar-h,
+                  rect(width: col-w, height: bar-h, fill: fill-colour, stroke: none),
+                )
+              }
+            } else {
+              hero
+            }
+          }))
+        }
+
+        if meta-block != none {
+          line-at(meta-y - 0.7em.to-absolute() * s, 0.5pt, pal.brand.transparentize(65%))
+          place(top + left, dx: m.left, dy: meta-y, block(width: text-w, meta-block))
+        }
+
+        // --- Grid overlay ------------------------------------------------------------------
+        if grid-debug {
+          let dbg = rgb("#E5006D")
+          place(top + left, dx: m.left, dy: m.top, rect(
+            width: text-w,
+            height: h - m.top - m.bottom,
+            stroke: 0.4pt + dbg.transparentize(40%),
+          ))
+          for i in range(columns) {
+            place(top + left, dx: m.left + i * (col-w + g), dy: m.top, rect(
+              width: col-w,
+              height: h - m.top - m.bottom,
+              fill: dbg.transparentize(92%),
+              stroke: none,
+            ))
+          }
+          place(top + left, line(start: (0pt, 0pt), end: (w, h), stroke: 0.3pt + dbg))
+          place(top + left, line(start: (w, 0pt), end: (0pt, h), stroke: 0.3pt + dbg))
+          line-at(optical * h, 0.6pt, dbg)
+          place(top + left, dx: m.left, dy: title-y, rect(
+            width: text-w,
+            height: title-h,
+            stroke: 0.4pt + rgb("#00A0B0"),
+          ))
+          place(top + left, dx: m.left, dy: h - 14pt, text(
+            size: 7pt,
+            fill: dbg,
+            font: "DejaVu Sans Mono",
+          )[#canon · s=#calc.round(s, digits: 3) · fit=#calc.round(fit-factor, digits: 2) · col=#col-w.to-absolute() · gut=#g · hero=#calc.round(hero-h / 1mm, digits: 1)mm])
+        }
+      })
+    },
+  )
+
+  if counter-reset { counter(page).update(1) }
 }
 
 // ===== Helper Functions =====

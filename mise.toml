@@ -1,3 +1,28 @@
 [tools]
 rust = "latest"
 typst = "latest"
+typstyle = "latest"
+
+[tasks.install]
+description = "Symlink thai-doc-engine into Typst's local package dir"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+BASE="${TYPST_PACKAGE_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/typst/packages}/local"
+DEST="$BASE/thai-doc-engine"
+# thai-doc-engine may itself be a stray symlink from a prior manual install
+# (see CLAUDE.md gotcha) -- if so, `mkdir -p` would silently follow it into
+# the wrong tree. Remove only if it's a symlink; keep it if it's a real dir
+# with other content.
+if [ -L "$DEST" ]; then
+  rm "$DEST"
+fi
+mkdir -p "$DEST"
+ln -sfn "$MISE_PROJECT_ROOT/package/thai-doc-engine/1.0.0" "$DEST/1.0.0"
+echo "Installed @local/thai-doc-engine:1.0.0 -> $DEST/1.0.0"
+'''
+
+[tasks.format]
+description = "Format all Typst files under docs/ in place"
+run = "typstyle -i docs"
+
