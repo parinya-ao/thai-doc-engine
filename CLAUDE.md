@@ -7,12 +7,15 @@ Typst package `thai-doc-engine` (Thai-English academic document engine) plus a R
 plugin `wasm/thai-segmenter` (Rust port of Google's BudouX phrase-segmentation model) that
 prevents Typst's line breaker from splitting Thai text mid-phrase.
 
-- `package/thai-doc-engine/1.0.0/` — the Typst package: `lib.typ` (show rules), `typst.toml`
-  (manifest), `typography.json` (Thai word config), and the committed built plugin binary
-  `thai_segmenter.wasm`.
+- `package/thai-doc-engine/1.0.0/` — the Typst package: `lib.typ` is a thin re-export shim over
+  `src/` (`config.typ` → `metrics.typ` → `cover.typ`/`engine.typ`, a layered DAG with no cycles),
+  `typst.toml` (manifest), `typography.json` (Thai word config), and the committed built plugin
+  binary `thai_segmenter.wasm`.
 - `wasm/thai-segmenter/` — Rust source for the plugin (`src/lib.rs`), built via
   `wasm-minimal-protocol` (Typst's plugin ABI, not wasm-bindgen) to `wasm32-unknown-unknown`.
-- `docs/` and `example/` are currently empty placeholders.
+- `docs/cover.md` documents the `cover()` design math (Van de Graaf canon, Swiss grid, optical
+  centre, WCAG contrast) implemented in `src/cover.typ`. `example/example.typ` is the package's
+  usage example.
 
 ## Build / test
 No Makefile or CI in this repo. Raw commands (run from repo root):

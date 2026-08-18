@@ -24,7 +24,8 @@ for other platforms.
 )
 ```
 
-See `example.typ` at the repo root for a minimal working example.
+See `example/example.typ` for a minimal working example. For the cover-page design math
+(Van de Graaf canon, Swiss grid, optical centre, WCAG contrast), see `docs/cover.md`.
 
 ## Building the WASM plugin
 

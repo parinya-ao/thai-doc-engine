@@ -1,0 +1,4 @@
+# Editor/OS cruft that must never ship in a published package
+.DS_Store
+*.swp
+*~
