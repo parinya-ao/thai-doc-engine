@@ -11,14 +11,19 @@ comparing pages side by side. Typst has no assertion/diff framework, so
 From repo root:
 
 ```sh
-for f in tests/**/*.typ; do
-  out="tests/out/$(echo "$f" | tr / _ .pdf)"
-  typst compile --root . "$f" "$out" || echo "FAILED: $f"
-done
+mise run typst_test
 ```
 
-(requires a `**` glob-enabled shell, e.g. `shopt -s globstar` in bash, or
-use `find tests -name '*.typ'` instead)
+It compiles every `tests/**/*.typ` (skipping the import-only `_fixtures.typ`)
+into `tests/out/`, naming each output after the fixture's path with the leading
+`tests/` dropped and `/` folded to `_` — `tests/13-cover/use.typ` becomes
+`tests/out/13-cover_use.pdf`. It prints one line per fixture, then a count, and
+exits non-zero if any failed.
+
+A handful of PDFs are also committed next to their `.typ` (`01-phrase-break/`,
+`04-latin-hyphenation/`, `13-cover/papers.pdf`) for side-by-side reading. The
+task does not write those; refresh them with `typst compile --root . <file>.typ
+<file>.pdf` when the pair they illustrate changes.
 
 ## What to look for in each pair
 

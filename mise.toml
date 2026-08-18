@@ -29,6 +29,35 @@ echo "Installed @local/thai-doc-engine:1.0.0 -> $DEST/1.0.0"
 description = "Format all Typst files under docs/ in place"
 run = "typstyle -i docs"
 
+# Typst has no assertion framework, so "test" means: every fixture compiles
+# cleanly to a non-empty PDF. The output name mirrors the fixture's path with
+# the leading `tests/` dropped and `/` folded to `_`, which is the convention
+# the committed PDFs in tests/out/ already use.
+[tasks.typst_test]
+description = "Compile every tests/**/*.typ into tests/out/ and report failures"
+run = '''
+#!/usr/bin/env bash
+set -uo pipefail
+cd "$MISE_PROJECT_ROOT"
+mkdir -p tests/out
+ok=0
+fail=0
+while IFS= read -r f; do
+  # _fixtures.typ is an import-only module: it has no page content of its own.
+  [ "$f" = "tests/_fixtures.typ" ] && continue
+  out="tests/out/$(printf '%s' "${f#tests/}" | tr / _ | sed 's/\.typ$//').pdf"
+  if typst compile --root . "$f" "$out" && [ -s "$out" ]; then
+    ok=$((ok + 1))
+    printf '  ok    %s -> %s\n' "$f" "$out"
+  else
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$f"
+  fi
+done < <(find tests -name '*.typ' | sort)
+printf '\n%d compiled, %d failed\n' "$ok" "$fail"
+[ "$fail" -eq 0 ]
+'''
+
 # ===== wasm/thai-segmenter =====
 # The plugin binary is committed so that compiling a Typst document never needs
 # Rust. These tasks are for changing the plugin, not for using it.

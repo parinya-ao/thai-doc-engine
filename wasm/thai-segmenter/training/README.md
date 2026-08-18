@@ -1,10 +1,17 @@
 # Training data for the Thai segmenter
 
-`models/th.json` is Google's stock BudouX model, trained on 1,153 lines of Wisesight
-social-media text (see `../NOTICE`). Academic Thai is a different distribution, and the model
-shows it: it cuts inside ordinary compound words, which is why the Typst package carries a
-~300-entry `../tests/keep-phrases.txt` patch list. This directory holds what is needed to train
-a replacement.
+`models/th.json` is a **retrained** model: BudouX's AdaBoost fitted against the corpora this
+directory prepares (LST20 + VISTEC, 107,468 lines). It replaced Google's stock BudouX model —
+kept alongside it as `../models/th.json.bak`, and byte-identical to upstream's
+`budoux/models/th.json` — which was trained on 1,153 lines of Wisesight social-media text (see
+`../NOTICE`). Academic Thai is a different distribution, and the stock model showed it: it cut
+inside ordinary compound words, which is why the Typst package carried a 300-entry
+`keep-phrases` patch list. That list is down to 227 entries and `../tests/keep-phrases.txt`
+keeps all 300 as a fixed benchmark.
+
+The retrained model is **under-trained**: it came from an interrupted run and carries 435
+features against the stock model's 2,427. A full-length run is the obvious next gain — see
+"Training, manually" below.
 
 Nothing here trains anything. The two mise tasks fetch corpora and label them; the training run
 is manual.
@@ -90,8 +97,15 @@ python scripts/build_model.py weights.txt -o th.json
 
 `train.py` is an anytime algorithm: interrupting it leaves a valid model. Copy the result over
 `../models/th.json`, then `mise run build_wasm`. `cargo test` asserts the model's total weight
-(4401) as a fingerprint of the shipped weights, so a new model fails that assertion until the
-constant is updated — deliberately.
+(3039) as a fingerprint of the shipped weights, so a new model fails that assertion until the
+constant is updated — deliberately. It also asserts the curated-word ratchet in
+`../tests/invariants.rs`, which is the acceptance gate proper.
+
+Iteration count is the lever that matters. `--iter 1000` selects only 143 distinct features and
+scores F1 0.779 on `lst20.val`; the shipped model's 435 features came from a longer run and
+score 0.861. BudouX's own default is 10,000 and its pipeline uses 200,000. Encode
+`data/prepared/all.val.txt` and pass it as `--val-data` so the run reports held-out numbers
+rather than training ones — the shipped model was fitted without it.
 
 Before and after, measure:
 
@@ -101,6 +115,21 @@ mise run eval score wasm/thai-segmenter/training/data/prepared/vistec.val.txt 1
 ```
 
 Score with `min-chunk 1`. The gold here is *word* boundaries, while the shipped runtime merges
-chunks under three clusters, so the default `3` measures the merge pass as much as the model:
-the stock `th.json` scores F1 0.885 against `lst20.val.txt` at `1` and 0.696 at `3`, from the
-same weights. Use `3` only to compare two models under production settings.
+chunks under three clusters, so the default `3` measures the merge pass as much as the model.
+Use `3` only to compare two models under production settings.
+
+| | lst20.val @1 | vistec.val @1 | lst20.val @3 | vistec.val @3 | curated words split |
+| --- | --- | --- | --- | --- | --- |
+| retrained (shipped) | 0.8612 | 0.8887 | 0.6778 | 0.6783 | **227**/300 |
+| stock (`th.json.bak`) | **0.8850** | **0.9132** | **0.6961** | **0.6955** | 268/300 |
+
+Read both columns before swapping a model. Word-boundary F1 rewards cutting, so a model that
+over-segments scores well on it while being exactly wrong for this package — the stock model
+predicts 407,446 boundaries against `lst20.val`'s 326,351 gold, and only survives on F1 because
+`is_breakable` vetoes 60,075 of them at runtime. The curated-word count is the metric that
+tracks the failure this package exists to fix, and is the ratchet `../tests/invariants.rs`
+enforces. The retrained model was adopted on that basis, at a 2.4-point F1 cost.
+
+To score a model that is not the one in `../models/th.json`, copy the crate elsewhere, drop the
+candidate in as its `models/th.json`, and point `--manifest-path` at the copy: `build.rs` bakes
+the weights in at compile time, so there is no runtime model flag.

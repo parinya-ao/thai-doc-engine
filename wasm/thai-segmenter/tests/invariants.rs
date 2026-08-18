@@ -31,10 +31,11 @@ fn chunks(text: &str, min_chunk: usize) -> Vec<String> {
 /// model earns its place by driving this number down, and the Typst package can
 /// drop its runtime `keep-phrases` list once the number is low enough that the
 /// list is no longer doing any work.
-/// Measured against the vendored `models/th.json`: 268 of 300. The list was
-/// selected as words this model splits, so a high number is expected — it is
-/// here to be driven down, and to make the size of the gap visible.
-const CURATED_WORDS_STILL_SPLIT: usize = 268;
+/// Measured against the vendored `models/th.json`: 227 of 300. The list was
+/// selected as words the *stock* BudouX model splits — it split 268 — so a high
+/// number is expected here too; it is here to be driven down, and to make the
+/// size of the gap visible. The retrained model closed 41 of them.
+const CURATED_WORDS_STILL_SPLIT: usize = 227;
 
 /// Put the word somewhere the model has to make a real decision about it: Thai
 /// context on both sides, of the kind `\p{sc=Thai}{8,}` in engine.typ matches.

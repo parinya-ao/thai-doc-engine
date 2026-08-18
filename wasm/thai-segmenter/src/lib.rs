@@ -133,7 +133,7 @@ pub fn cluster_count(text: &str) -> usize {
 /// Whether a break at `i` is *structurally* legal, independent of the model.
 ///
 /// The trained weights already score the orthographic cases strongly negative
-/// (`UW3["ั"] = -3075`), so that part rarely changes an answer — it turns a
+/// (`UW3["ั"] = -2483`), so that part rarely changes an answer — it turns a
 /// statistical property into a guaranteed one. The whitespace and atomic-token
 /// clauses are not in the weights at all.
 fn is_breakable(chars: &[char], i: usize) -> bool {
@@ -485,14 +485,17 @@ mod tests {
         // keys, so this is not re-testing PHF's correctness, only build.rs's.
         //
         // It is also the guard on `pack` being identical here and in build.rs:
-        // if the two disagreed, every lookup in the crate would miss and these
-        // three would come back None.
-        // assert_eq!(UW3.get(&(key("ั") as u32)).copied(), Some(-2483)); // matches is_breakable's doc comment
-        // assert_eq!(BW2.get(&key("  ")).copied(), None);
-        // assert_eq!(TW3.get(&key("  ม")).copied(), Some(-1513));
+        // if the two disagreed, every lookup in the crate would miss and the
+        // two weighted lookups below would come back None.
+        assert_eq!(UW3.get(&(key("ั") as u32)).copied(), Some(-2483)); // matches is_breakable's doc comment
+        assert_eq!(TW3.get(&key("กว่")).copied(), Some(-472));
+        // A run of two spaces is a feature the stock Wisesight model carried and
+        // this one never saw: an absent key scores 0 rather than matching a
+        // shorter one that shares its tail.
+        assert_eq!(BW2.get(&key("  ")).copied(), None);
         // ฬ appears nowhere in the shipped model: an unseen character scores 0
         // rather than matching something else.
-        // assert_eq!(UW1.get(&(key("ฬ") as u32)), None);
+        assert_eq!(UW1.get(&(key("ฬ") as u32)), None);
     }
 
     #[test]
