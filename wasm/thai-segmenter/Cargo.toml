@@ -10,6 +10,17 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The evaluation harness is a host-only development tool. It sits behind a
+# non-default feature so that `cargo build --target wasm32-unknown-unknown`
+# never tries to link a binary against the plugin ABI.
+[features]
+cli = []
+
+[[bin]]
+name = "eval"
+path = "src/bin/eval.rs"
+required-features = ["cli"]
+
 [dependencies]
 wasm-minimal-protocol = "0.2.0"
 

@@ -1,4 +1,4 @@
-#import "thai-doc-engine:1.0.0": *
+#import "@local/thai-doc-engine:1.0.0": *
 
 #show: thai-document-engine.with(
   header-left: "Kasetsart University",

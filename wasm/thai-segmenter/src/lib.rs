@@ -39,19 +39,111 @@ fn is_non_starter(c: char) -> bool {
     matches!(c, '\u{0E30}'..='\u{0E3A}' | '\u{0E45}'..='\u{0E4E}')
 }
 
+/// U+0E3A PHINTHU subscripts the consonant that *follows* it, in Pali and
+/// Sanskrit spellings (พฺราหฺมณ). It is already covered by `is_non_starter`, so
+/// nothing may break before it; `is_cluster_boundary` also forbids breaking
+/// after it, which is what keeps the subscript attached to its base.
+const PHINTHU: char = '\u{0E3A}';
+
 /// Characters that must never end a chunk: the leading vowels เ แ โ ใ ไ, which
 /// are written before the consonant they are pronounced after.
 fn is_leading_vowel(c: char) -> bool {
     matches!(c, '\u{0E40}'..='\u{0E44}')
 }
 
+/// A decimal digit in either script the documents use — ASCII and Thai
+/// (U+0E50..=U+0E59, ๐๑๒๓๔๕๖๗๘๙).
+fn is_digit(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, '\u{0E50}'..='\u{0E59}')
+}
+
+/// Whether a break at `i` would fall *inside* a token that is atomic no matter
+/// what the model thinks: a run of ASCII alphanumerics (AVR128DA28, LoRa, SF7),
+/// or a number with a decimal separator inside it (920.5, ๑,๐๐๐).
+///
+/// `is_script_transition` already keeps such a token from *merging* into the
+/// Thai around it; this keeps the token from being split down the middle. The
+/// shipped model happens never to cut these, but nothing in an n-gram model
+/// guarantees that, and a model refresh could change it silently.
+///
+/// A veto, not a vote: `is_breakable` applies it before anything else, so not
+/// even a forced boundary can override it. That matters where the two collide —
+/// a Thai digit next to an ASCII one is a script transition *and* the middle of
+/// a number, and staying whole is the right answer.
+fn is_inside_token(chars: &[char], i: usize) -> bool {
+    let (a, b) = (chars[i - 1], chars[i]);
+    if a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric() {
+        return true;
+    }
+    if is_digit(a) && is_digit(b) {
+        return true;
+    }
+    let separator = |c: char| c == '.' || c == ',';
+    // 128|.5 — the separator opens the second chunk.
+    if separator(b) && is_digit(a) && chars.get(i + 1).is_some_and(|&c| is_digit(c)) {
+        return true;
+    }
+    // 128.|5 — the separator closes the first one.
+    separator(a) && is_digit(b) && i >= 2 && is_digit(chars[i - 2])
+}
+
+/// Whether `chars[i]` begins a new orthographic cluster: it is not a mark that
+/// hangs off the previous character, and the previous character is not one that
+/// must stay glued to what follows it.
+///
+/// This is the same question as "may a chunk end here", which is why
+/// `is_breakable` is this predicate plus bounds checks and the atomic-token
+/// veto — a chunk boundary is by definition a cluster boundary.
+fn is_cluster_boundary(chars: &[char], i: usize) -> bool {
+    let previous = chars[i - 1];
+    !is_non_starter(chars[i]) && !is_leading_vowel(previous) && previous != PHINTHU
+}
+
+/// Running count of cluster boundaries: `prefix[i]` is how many of `1..=i` begin
+/// a cluster, so the clusters in `chars[a..b]` number `1 + prefix[b - 1] -
+/// prefix[a]`. `merge_short_chunks` asks that question once per candidate cut,
+/// which is why it is a prefix sum rather than a rescan.
+fn cluster_prefix(chars: &[char]) -> Vec<u32> {
+    let mut prefix = Vec::with_capacity(chars.len());
+    prefix.push(0);
+    for i in 1..chars.len() {
+        prefix.push(prefix[i - 1] + u32::from(is_cluster_boundary(chars, i)));
+    }
+    prefix
+}
+
+/// Clusters in `chars[start..end]`, given `cluster_prefix(chars)`.
+fn cluster_len(prefix: &[u32], start: usize, end: usize) -> usize {
+    debug_assert!(start < end && end <= prefix.len());
+    (1 + prefix[end - 1] - prefix[start]) as usize
+}
+
+/// Number of orthographic clusters in `text` — how many glyph stacks a reader
+/// sees, which is the unit `min_chunk` counts. `ที่` is three characters but one
+/// cluster; `หน้า` is four characters but two. Counting characters instead
+/// overstates how wide a fragment looks by up to a factor of four.
+pub fn cluster_count(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return 0;
+    }
+    cluster_len(&cluster_prefix(&chars), 0, chars.len())
+}
+
 /// Whether a break at `i` is *structurally* legal, independent of the model.
 ///
-/// The trained weights already score these positions strongly negative
-/// (`UW3["ั"] = -3075`), so this rarely changes an answer — it turns a
-/// statistical property into a guaranteed one.
+/// The trained weights already score the orthographic cases strongly negative
+/// (`UW3["ั"] = -2483`), so that part rarely changes an answer — it turns a
+/// statistical property into a guaranteed one. The whitespace and atomic-token
+/// clauses are not in the weights at all.
 fn is_breakable(chars: &[char], i: usize) -> bool {
-    i > 0 && i < chars.len() && !is_non_starter(chars[i]) && !is_leading_vowel(chars[i - 1])
+    i > 0
+        && i < chars.len()
+        // A chunk that opens with a space would carry that space into a box,
+        // where it can no longer be the break opportunity UAX #14 says it is.
+        && !chars[i].is_whitespace()
+        && is_cluster_boundary(chars, i)
+        && !is_inside_token(chars, i)
 }
 
 /// Whether the break at `i` crosses from ASCII alphanumerics into the Thai
@@ -71,92 +163,120 @@ fn is_script_transition(chars: &[char], i: usize) -> bool {
     (a.is_ascii_alphanumeric() && is_thai(b)) || (is_thai(a) && b.is_ascii_alphanumeric())
 }
 
-fn lookup(table: &phf::Map<&'static str, i32>, key: &str) -> i64 {
-    table.get(key).copied().unwrap_or(0) as i64
+/// Boundaries taken without consulting the model, and never given back by the
+/// short-chunk merge: a script transition, or the end of a run of whitespace.
+///
+/// The whitespace clause is the other half of the rule `is_breakable` starts —
+/// no chunk may *open* with a space, so a chunk has to *close* on one. Together
+/// they put the run of spaces at the tail of the preceding chunk, where a line
+/// end can absorb it, instead of at the head of the following one, where a box
+/// would freeze it.
+fn is_forced_boundary(chars: &[char], i: usize) -> bool {
+    is_script_transition(chars, i) || chars[i - 1].is_whitespace()
 }
 
-/// Score of the n-gram `chars[start..end]` in `table`, reusing `buf` so the hot
-/// loop does not allocate for every one of the thirteen feature lookups.
-fn score_ngram(table: &phf::Map<&'static str, i32>, chars: &[char], start: usize, end: usize, buf: &mut String) -> i64 {
-    buf.clear();
-    buf.extend(chars[start..end].iter());
-    lookup(table, buf)
+/// Fold `chars[start..end]` into the integer the model tables are keyed by: a
+/// leading 1 bit, then each character in 21 bits, most significant first. The
+/// mirror of `pack` in build.rs — see the comment there for why the tables hold
+/// integers rather than strings.
+fn pack(chars: &[char], start: usize, end: usize) -> u64 {
+    chars[start..end].iter().fold(1u64, |acc, &c| (acc << 21) | c as u64)
+}
+
+/// Weight of the unigram `chars[i]`, or 0 when the model has never seen it.
+fn uni(table: &phf::Map<u32, i32>, chars: &[char], i: usize) -> i64 {
+    table.get(&(pack(chars, i, i + 1) as u32)).copied().unwrap_or(0) as i64
+}
+
+/// Weight of the bigram or trigram `chars[start..end]`.
+fn multi(table: &phf::Map<u64, i32>, chars: &[char], start: usize, end: usize) -> i64 {
+    table.get(&pack(chars, start, end)).copied().unwrap_or(0) as i64
 }
 
 /// BudouX's decision for the boundary before `chars[i]`, with `i > 0`.
 ///
 /// Reference: `sum(weights) - 0.5 * TOTAL > 0`, rewritten as `2 * sum > TOTAL`.
-fn is_phrase_boundary(chars: &[char], i: usize, buf: &mut String) -> bool {
+fn is_phrase_boundary(chars: &[char], i: usize) -> bool {
     let n = chars.len();
     let mut sum: i64 = 0;
 
     if i > 2 {
-        sum += score_ngram(UW1, chars, i - 3, i - 2, buf);
+        sum += uni(UW1, chars, i - 3);
     }
     if i > 1 {
-        sum += score_ngram(UW2, chars, i - 2, i - 1, buf);
+        sum += uni(UW2, chars, i - 2);
     }
-    sum += score_ngram(UW3, chars, i - 1, i, buf);
-    sum += score_ngram(UW4, chars, i, i + 1, buf);
+    sum += uni(UW3, chars, i - 1);
+    sum += uni(UW4, chars, i);
     if i + 1 < n {
-        sum += score_ngram(UW5, chars, i + 1, i + 2, buf);
+        sum += uni(UW5, chars, i + 1);
     }
     if i + 2 < n {
-        sum += score_ngram(UW6, chars, i + 2, i + 3, buf);
+        sum += uni(UW6, chars, i + 2);
     }
 
     if i > 1 {
-        sum += score_ngram(BW1, chars, i - 2, i, buf);
+        sum += multi(BW1, chars, i - 2, i);
     }
-    sum += score_ngram(BW2, chars, i - 1, i + 1, buf);
+    sum += multi(BW2, chars, i - 1, i + 1);
     if i + 1 < n {
-        sum += score_ngram(BW3, chars, i, i + 2, buf);
+        sum += multi(BW3, chars, i, i + 2);
     }
 
     if i > 2 {
-        sum += score_ngram(TW1, chars, i - 3, i, buf);
+        sum += multi(TW1, chars, i - 3, i);
     }
     if i > 1 {
-        sum += score_ngram(TW2, chars, i - 2, i + 1, buf);
+        sum += multi(TW2, chars, i - 2, i + 1);
     }
     if i + 1 < n {
-        sum += score_ngram(TW3, chars, i - 1, i + 2, buf);
+        sum += multi(TW3, chars, i - 1, i + 2);
     }
     if i + 2 < n {
-        sum += score_ngram(TW4, chars, i, i + 3, buf);
+        sum += multi(TW4, chars, i, i + 3);
     }
 
     2 * sum > TOTAL
 }
 
 /// Drop *statistical* boundaries until no chunk is shorter than `min_chunk`
-/// characters. `forced` boundaries (`is_script_transition`) are never
+/// orthographic clusters. `forced` boundaries (`is_forced_boundary`) are never
 /// dropped — including by the trailing-chunk check — because merging one
-/// away would silently re-join the two scripts the caller relied on this
+/// away would silently re-join the two things the caller relied on this
 /// function to keep apart, and `weld_str`/`segment_str` have no other way to
 /// learn that boundary should have stayed open.
 ///
 /// BudouX's Thai model chunks at roughly word granularity, so a nominaliser or
-/// preposition (การ, ความ, ที่, ของ, และ — all three to four characters) comes
-/// back as a chunk of its own and a line is then free to end on it, leaving a
+/// preposition (การ, ความ, ที่, ของ, และ — one to three clusters each) comes back
+/// as a chunk of its own and a line is then free to end on it, leaving a
 /// fragment dangling. Merging every short chunk into its successor restores the
 /// "sticky prefix" behaviour of the word list this plugin replaced, without a
 /// word list: the criterion is length, not vocabulary, so it holds for terms
 /// nobody enumerated. The final chunk merges backwards instead, since it has no
 /// successor.
-fn merge_short_chunks(cuts: Vec<usize>, forced: &[usize], len: usize, min_chunk: usize) -> Vec<usize> {
+///
+/// Length is counted in clusters rather than characters because that is what a
+/// reader sees: `หน้า` and `เพื่อ` are four and five characters but two clusters
+/// each, no wider on the page than `ที่`, and a character count waves them
+/// through as if they were full words.
+fn merge_short_chunks(cuts: Vec<usize>, forced: &[usize], prefix: &[u32], min_chunk: usize) -> Vec<usize> {
     if min_chunk < 2 || cuts.is_empty() {
         return cuts;
     }
+    // `forced` is built in ascending order by `boundaries`, so membership is a
+    // binary search rather than the linear scan this loop would otherwise do
+    // once per cut.
+    let is_forced = |cut: &usize| forced.binary_search(cut).is_ok();
+    let len = prefix.len();
     let mut kept: Vec<usize> = Vec::with_capacity(cuts.len());
     let mut start = 0usize;
     for cut in cuts {
-        if forced.contains(&cut) || cut - start >= min_chunk {
+        if is_forced(&cut) || cluster_len(prefix, start, cut) >= min_chunk {
             kept.push(cut);
             start = cut;
         }
     }
-    if len - start < min_chunk && kept.last().is_some_and(|c| !forced.contains(c)) {
+    if cluster_len(prefix, start, len) < min_chunk && kept.last().is_some_and(|c| !is_forced(c)) {
         kept.pop();
     }
     kept
@@ -164,21 +284,34 @@ fn merge_short_chunks(cuts: Vec<usize>, forced: &[usize], len: usize, min_chunk:
 
 /// Indices (in characters) where a chunk starts, excluding 0.
 fn boundaries(chars: &[char], min_chunk: usize) -> Vec<usize> {
-    let mut buf = String::with_capacity(16);
     let mut forced: Vec<usize> = Vec::new();
     let cuts: Vec<usize> = (1..chars.len())
         .filter(|&i| {
             if !is_breakable(chars, i) {
                 return false;
             }
-            if is_script_transition(chars, i) {
+            if is_forced_boundary(chars, i) {
                 forced.push(i);
                 return true;
             }
-            is_phrase_boundary(chars, i, &mut buf)
+            is_phrase_boundary(chars, i)
         })
         .collect();
-    merge_short_chunks(cuts, &forced, chars.len(), min_chunk)
+    merge_short_chunks(cuts, &forced, &cluster_prefix(chars), min_chunk)
+}
+
+/// The segmentation of `text` as character indices rather than substrings: every
+/// index where a chunk starts, excluding 0.
+///
+/// `segment_str` is this plus slicing. The evaluation harness
+/// (`src/bin/eval.rs`) compares positions against a gold file, so it wants the
+/// indices without paying for the string surgery.
+pub fn phrase_boundaries(text: &str, min_chunk: usize) -> Vec<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 2 {
+        return Vec::new();
+    }
+    boundaries(&chars, min_chunk)
 }
 
 /// Split `text` into BudouX phrases, joined by U+001F.
@@ -247,9 +380,8 @@ pub fn glue_str(text: &str, min_chunk: usize) -> String {
     // exactly on the boundary that is supposed to be always-open. Typst's
     // own ICU segmenter already treats a script change as a break
     // opportunity on its own, so glue does not need to add one here.
-    let mut buf = String::with_capacity(16);
     let raw: Vec<usize> = (1..chars.len())
-        .filter(|&i| is_breakable(&chars, i) && is_phrase_boundary(&chars, i, &mut buf))
+        .filter(|&i| is_breakable(&chars, i) && is_phrase_boundary(&chars, i))
         .collect();
 
     // Glue a boundary only where a SHORT chunk is followed by a full-length one
@@ -261,10 +393,11 @@ pub fn glue_str(text: &str, min_chunk: usize) -> String {
         .chain(raw.iter().copied())
         .chain(core::iter::once(chars.len()))
         .collect();
+    let prefix = cluster_prefix(&chars);
     let mut dropped = (1..bounds.len() - 1)
         .filter(|&k| {
-            let this = bounds[k] - bounds[k - 1];
-            let next = bounds[k + 1] - bounds[k];
+            let this = cluster_len(&prefix, bounds[k - 1], bounds[k]);
+            let next = cluster_len(&prefix, bounds[k], bounds[k + 1]);
             this < min_chunk && next >= min_chunk
         })
         .map(|k| bounds[k])
@@ -281,8 +414,14 @@ pub fn glue_str(text: &str, min_chunk: usize) -> String {
     out
 }
 
+// The two error paths below build their messages by concatenation rather than
+// with `format!`. Nothing else in the plugin formats anything, so the one
+// `format!` that used to be here was dragging all of `core::fmt` into a binary
+// that is otherwise pure table lookups: removing it costs the `Utf8Error`
+// offset and saves 10 KB of the shipped wasm.
+
 fn decode(text: &[u8]) -> Result<&str, String> {
-    core::str::from_utf8(text).map_err(|e| format!("thai-segmenter: input is not UTF-8: {e}"))
+    core::str::from_utf8(text).map_err(|_| "thai-segmenter: input is not UTF-8".to_string())
 }
 
 /// `min_chunk` arrives as decimal ASCII: Typst plugins speak byte buffers only.
@@ -292,7 +431,7 @@ fn decode_min_chunk(raw: &[u8]) -> Result<usize, String> {
         return Ok(0);
     }
     text.parse::<usize>()
-        .map_err(|_| format!("thai-segmenter: min-chunk is not a number: {text:?}"))
+        .map_err(|_| String::from("thai-segmenter: min-chunk is not a number: ") + text)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_func)]
@@ -329,7 +468,13 @@ mod tests {
     #[test]
     fn total_matches_the_shipped_model() {
         // Sum of every weight in models/th.json; a model swap must be noticed.
-        assert_eq!(TOTAL, 4401);
+        assert_eq!(TOTAL, 3039);
+    }
+
+    /// Pack a literal the way the tables are keyed, for the tests below.
+    fn key(s: &str) -> u64 {
+        let chars: Vec<char> = s.chars().collect();
+        pack(&chars, 0, chars.len())
     }
 
     #[test]
@@ -338,10 +483,30 @@ mod tests {
         // that associates the wrong models/th.json group with the wrong
         // FEATURES name. PHF's own .build() already panics on duplicate
         // keys, so this is not re-testing PHF's correctness, only build.rs's.
-        assert_eq!(UW3.get("ั").copied(), Some(-3075)); // matches is_breakable's doc comment
-        assert_eq!(BW2.get("  ").copied(), Some(-3208));
-        assert_eq!(TW3.get("  ม").copied(), Some(-1513));
-        assert_eq!(UW1.get("ไม่มีทางเจอ"), None);
+        //
+        // It is also the guard on `pack` being identical here and in build.rs:
+        // if the two disagreed, every lookup in the crate would miss and the
+        // two weighted lookups below would come back None.
+        assert_eq!(UW3.get(&(key("ั") as u32)).copied(), Some(-2483)); // matches is_breakable's doc comment
+        assert_eq!(TW3.get(&key("กว่")).copied(), Some(-472));
+        // A run of two spaces is a feature the stock Wisesight model carried and
+        // this one never saw: an absent key scores 0 rather than matching a
+        // shorter one that shares its tail.
+        assert_eq!(BW2.get(&key("  ")).copied(), None);
+        // ฬ appears nowhere in the shipped model: an unseen character scores 0
+        // rather than matching something else.
+        assert_eq!(UW1.get(&(key("ฬ") as u32)), None);
+    }
+
+    #[test]
+    fn packing_separates_keys_of_different_lengths() {
+        // The sentinel bit is what stops a shorter key from colliding with a
+        // longer one that happens to share its tail.
+        assert_ne!(key("ก"), key("\u{0}ก"));
+        assert_ne!(key("กข"), key("\u{0}กข"));
+        // Distinct trigrams stay distinct at the top of the u64.
+        assert_ne!(key("กขค"), key("ขขค"));
+        assert_eq!(key("กขค") >> 63, 1, "the sentinel must occupy bit 63");
     }
 
     #[test]
@@ -377,8 +542,97 @@ mod tests {
         let raw = chunks("การพัฒนาระบบอัปเดตเฟิร์มแวร์ผ่านคลื่นวิทยุระยะไกล");
         assert_eq!(raw[0], "การ");
         let merged = chunks_min("การพัฒนาระบบอัปเดตเฟิร์มแวร์ผ่านคลื่นวิทยุระยะไกล", 4);
-        assert!(merged.iter().all(|c| c.chars().count() >= 4), "{merged:?}");
+        assert!(merged.iter().all(|c| cluster_count(c) >= 4), "{merged:?}");
         assert_eq!(merged.concat(), raw.concat());
+    }
+
+    #[test]
+    fn clusters_are_counted_not_characters() {
+        // Each of these is one glyph stack per consonant, whatever its length.
+        assert_eq!(cluster_count("ที่"), 1); // 3 chars
+        assert_eq!(cluster_count("หน้า"), 2); // 4 chars
+        assert_eq!(cluster_count("เพื่อ"), 2); // 5 chars
+        assert_eq!(cluster_count("การ"), 2); // กา + ร
+        assert_eq!(cluster_count("พฺราหฺมณ"), 3); // phinthu binds its successor
+        assert_eq!(cluster_count(""), 0);
+        assert_eq!(cluster_count("LoRa"), 4); // Latin: one cluster per character
+    }
+
+    #[test]
+    fn min_chunk_measures_clusters_so_wide_looking_chunks_are_not_waved_through() {
+        // "หน้า" and "เพื่อ" clear a four-*character* minimum while being no
+        // wider on the page than "ที่" — exactly the fragments the merge exists
+        // to stop from dangling. Counting clusters catches them.
+        let text = "มุ่งมั่นก้าวหน้าเพื่อพันธกิจ";
+        let raw = chunks(text);
+        assert!(raw.contains(&"หน้า".to_string()) && raw.contains(&"เพื่อ".to_string()), "{raw:?}");
+        assert!(raw.iter().any(|c| c.chars().count() >= 4 && cluster_count(c) < 3), "{raw:?}");
+        let merged = chunks_min(text, 3);
+        assert!(merged.iter().all(|c| cluster_count(c) >= 3), "{merged:?}");
+        assert_eq!(merged.concat(), text);
+    }
+
+    #[test]
+    fn never_splits_an_ascii_alphanumeric_run() {
+        for text in ["ใช้AVR128DA28ควบคุมLoRaทุกครั้ง", "โมดูลESP32WROOM32ทำงาน"] {
+            let out = chunks(text);
+            for token in ["AVR128DA28", "LoRa", "ESP32WROOM32"] {
+                if text.contains(token) {
+                    assert!(out.iter().any(|c| c == token), "{token} was split: {out:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn never_splits_a_number() {
+        // Both digit scripts, and both sides of the decimal separator.
+        for (text, number) in [
+            ("ความถี่ 920.5 เมกะเฮิรตซ์", "920.5"),
+            ("จำนวน ๑,๐๐๐ ครั้ง", "๑,๐๐๐"),
+            ("ระยะ 12345 เมตร", "12345"),
+        ] {
+            let out = chunks(text);
+            assert!(out.iter().any(|c| c.trim() == number), "{number} was split: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_chunk_never_opens_with_whitespace() {
+        // A leading space inside a box stops being a break opportunity, so the
+        // space belongs to the chunk that ends on it.
+        let text = "ระบบส่งข้อมูล ผ่านเครือข่าย ไร้สายระยะไกล";
+        for chunk in chunks(text) {
+            assert!(
+                !chunk.starts_with(char::is_whitespace),
+                "chunk {chunk:?} opens with whitespace"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_of_whitespace_always_closes_a_chunk() {
+        let text = "ระบบส่งข้อมูล ผ่านเครือข่าย ไร้สายระยะไกล";
+        let chars: Vec<char> = text.chars().collect();
+        // min_chunk high enough that only forced boundaries can survive.
+        let cuts = boundaries(&chars, 99);
+        for i in 1..chars.len() {
+            if chars[i - 1].is_whitespace() && !chars[i].is_whitespace() {
+                assert!(cuts.contains(&i), "no boundary after the space at {i}: {cuts:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn never_breaks_around_phinthu() {
+        let text = "พฺราหฺมณและพระเวทของอินเดียโบราณ";
+        let chars: Vec<char> = text.chars().collect();
+        for i in 1..chars.len() {
+            if chars[i - 1] == PHINTHU || chars[i] == PHINTHU {
+                assert!(!is_breakable(&chars, i), "breakable across phinthu at {i}");
+            }
+        }
+        assert!(chunks(text).iter().any(|c| c == "พฺราหฺมณ"), "{:?}", chunks(text));
     }
 
     #[test]
@@ -432,9 +686,8 @@ mod tests {
         assert_eq!(glued.replace(WORD_JOINER, ""), text);
 
         let chars: Vec<char> = text.chars().collect();
-        let mut buf = String::new();
         let raw: Vec<usize> = (1..chars.len())
-            .filter(|&i| is_breakable(&chars, i) && is_phrase_boundary(&chars, i, &mut buf))
+            .filter(|&i| is_breakable(&chars, i) && is_phrase_boundary(&chars, i))
             .collect();
         let mut source = 0usize;
         for c in glued.chars() {
